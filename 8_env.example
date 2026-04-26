@@ -1,0 +1,6 @@
+# Google Gemini API Key (obtida em https://aistudio.google.com/app/apikey)
+# Cole sua chave abaixo e renomeie este arquivo para .env.local
+GOOGLE_GEMINI_API_KEY=sua_chave_aqui
+
+# URL do Kiwify para upgrade PRO
+NEXT_PUBLIC_KIWIFY_URL=https://pay.kiwify.com.br/8dq9075

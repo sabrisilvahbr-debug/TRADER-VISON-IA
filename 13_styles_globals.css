@@ -1,0 +1,193 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg:    #0B0F14;
+  --bg2:   #111820;
+  --bg3:   #161E27;
+  --blue:  #00C2FF;
+  --green: #00FF88;
+  --red:   #FF4560;
+  --gold:  #FFD700;
+  --gray:  #8A9BB0;
+  --border: rgba(0,194,255,0.15);
+  --glass:  rgba(255,255,255,0.04);
+  --glass2: rgba(0,194,255,0.08);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: #fff;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,194,255,0.2); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,194,255,0.4); }
+
+/* Grid background animation */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(0,194,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,194,255,0.04) 1px, transparent 1px);
+  background-size: 60px 60px;
+  animation: gridMove 20s linear infinite;
+}
+
+@keyframes gridMove {
+  0%   { background-position: 0 0; }
+  100% { background-position: 60px 60px; }
+}
+
+/* Glow orbs */
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.2;
+}
+.orb-blue {
+  width: 500px; height: 500px;
+  background: var(--blue);
+  animation: orbFloat 8s ease-in-out infinite;
+}
+.orb-green {
+  width: 400px; height: 400px;
+  background: var(--green);
+  animation: orbFloat 8s ease-in-out infinite;
+  animation-delay: -4s;
+}
+
+@keyframes orbFloat {
+  0%,100% { transform: translate(0,0); }
+  50%      { transform: translate(30px,20px); }
+}
+
+/* Confidence bar animation */
+@keyframes fillBar {
+  from { width: 0%; }
+}
+
+/* Fade in up */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease forwards;
+}
+
+/* Spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  display: inline-block;
+  width: 20px; height: 20px;
+  border: 2px solid rgba(255,255,255,0.15);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* Glassmorphism card */
+.glass-card {
+  background: var(--glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, var(--blue), var(--green));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-gold {
+  background: linear-gradient(135deg, var(--gold), #ff8c00);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Button glow effect */
+.btn-glow {
+  box-shadow: 0 0 20px rgba(0,194,255,0.3);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.btn-glow:hover {
+  box-shadow: 0 0 40px rgba(0,194,255,0.5);
+  transform: translateY(-1px);
+}
+.btn-glow-gold {
+  box-shadow: 0 0 20px rgba(255,215,0,0.3);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.btn-glow-gold:hover {
+  box-shadow: 0 0 40px rgba(255,215,0,0.5);
+  transform: translateY(-1px);
+}
+
+/* Pulse dot */
+@keyframes pulseDot {
+  0%,100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.8); }
+}
+.pulse-dot {
+  animation: pulseDot 2s infinite;
+}
+
+/* Upload drop zone */
+.drop-zone-active {
+  border-color: var(--green) !important;
+  background: rgba(0,255,136,0.05) !important;
+}
+
+/* FAQ transition */
+.faq-answer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.35s ease, padding 0.35s ease;
+}
+.faq-answer.open {
+  max-height: 300px;
+}
+
+/* Ticker scroll */
+@keyframes tickerScroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.ticker-inner {
+  display: flex;
+  gap: 32px;
+  animation: tickerScroll 30s linear infinite;
+  width: max-content;
+}
+.ticker-inner:hover { animation-play-state: paused; }
+
+/* Video background */
+.video-bg {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0.15;
+}
