@@ -25,6 +25,10 @@ function rateLimited(ip: string): boolean {
 
 const PROMPT = `Você é um analista técnico de trading experiente. Analise o gráfico da imagem e preencha o JSON.
 Regras:
+- "niveis_y": posição vertical APROXIMADA de cada nível na imagem, de 0 (topo) a 1 (base). Omita o que não conseguir localizar.
+- "ativo" e "timeframe": leia da imagem; se ilegível, use o contexto informado; senão "—".
+- "riscos": 1 frase sobre o que invalida o setup.
+- Ajuste a cautela ao perfil de risco informado (conservador exige mais confirmação).
 - Use apenas o que é visível no gráfico; não invente níveis ilegíveis (use "—").
 - Se a imagem não for um gráfico financeiro, use decisao "EVITAR", confianca 55 e explique.
 - "explicacao": 2-3 frases em português justificando o setup e a decisão.
@@ -43,8 +47,21 @@ const schema = {
     confianca: { type: SchemaType.INTEGER },
     decisao: { type: SchemaType.STRING, format: 'enum', enum: ['ENTRAR', 'ESPERAR', 'EVITAR'] },
     explicacao: { type: SchemaType.STRING },
+    riscos: { type: SchemaType.STRING },
+    ativo: { type: SchemaType.STRING },
+    timeframe: { type: SchemaType.STRING },
+    niveis_y: {
+      type: SchemaType.OBJECT,
+      properties: {
+        suporte: { type: SchemaType.NUMBER },
+        resistencia: { type: SchemaType.NUMBER },
+        entrada: { type: SchemaType.NUMBER },
+        stop: { type: SchemaType.NUMBER },
+        take_profit: { type: SchemaType.NUMBER },
+      },
+    },
   },
-  required: ['tendencia', 'suporte', 'resistencia', 'padrao', 'entrada', 'stop', 'take_profit', 'confianca', 'decisao', 'explicacao'],
+  required: ['tendencia', 'suporte', 'resistencia', 'padrao', 'entrada', 'stop', 'take_profit', 'confianca', 'decisao', 'explicacao', 'riscos', 'ativo', 'timeframe'],
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -53,7 +70,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim()
   if (rateLimited(ip)) return res.status(429).json({ error: 'Muitas análises seguidas. Aguarde um minuto.' })
 
-  const { imageData, mimeType } = req.body ?? {}
+  const { imageData, mimeType, contexto } = req.body ?? {}
   if (typeof imageData !== 'string' || !imageData) return res.status(400).json({ error: 'Imagem não fornecida' })
   if (imageData.length > MAX_BASE64_CHARS) return res.status(413).json({ error: 'Imagem muito grande (máx. ~3,5MB).' })
   if (!ALLOWED_MIME.includes(mimeType)) return res.status(400).json({ error: 'Formato inválido. Use PNG, JPG ou WEBP.' })
@@ -66,10 +83,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       model: MODEL,
       generationConfig: { responseMimeType: 'application/json', responseSchema: schema, temperature: 0.2 },
     })
-    const out = await model.generateContent([{ inlineData: { data: imageData, mimeType } }, PROMPT])
+    const clean = (v: unknown, n: number) => String(v ?? '').replace(/[^\p{L}\p{N} ./:_-]/gu, '').slice(0, n)
+    const ctx = `Contexto informado: ativo="${clean(contexto?.ativo, 24)}", timeframe="${clean(contexto?.timeframe, 12)}", perfil="${clean(contexto?.perfil, 16)}".`
+    const out = await model.generateContent([{ inlineData: { data: imageData, mimeType } }, PROMPT + '\n' + ctx])
     const parsed = JSON.parse(out.response.text())
 
     parsed.confianca = Math.min(95, Math.max(0, Math.round(Number(parsed.confianca) || 55)))
+    for (const k of Object.keys(parsed.niveis_y ?? {})) {
+      const v = parsed.niveis_y[k]
+      if (typeof v !== 'number' || v < 0 || v > 1) delete parsed.niveis_y[k]
+    }
     return res.status(200).json({ result: parsed })
   } catch (error) {
     console.error('Gemini API error:', error)

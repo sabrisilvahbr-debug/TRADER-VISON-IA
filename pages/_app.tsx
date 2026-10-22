@@ -6,12 +6,11 @@ export default function App({ Component, pageProps }: AppProps) {
   return (
     <>
       <Head>
-        <title>AlphaVision AI — Análise de Trading com IA</title>
-        <meta name="description" content="Pare de operar no achismo. Use inteligência artificial para validar suas decisões de trading em segundos." />
+        <title>Trader Vision — Bot de análise de gráficos por foto</title>
+        <meta name="description" content="Envie o print de um gráfico e receba suporte, resistência, entrada, stop e alvo marcados na imagem." />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link rel="icon" href="/favicon.ico" />
-        <meta property="og:title" content="AlphaVision AI — Análise de Trading com IA" />
-        <meta property="og:description" content="IA que analisa o mercado em segundos. Tendência, suporte, resistência, entrada e stop automáticos." />
+        <meta property="og:title" content="Trader Vision — Bot de análise de gráficos por foto" />
+        <meta property="og:description" content="Bot que analisa o gráfico que você fotografa e marca os níveis na imagem." />
         <meta property="og:type" content="website" />
       </Head>
       <Component {...pageProps} />
