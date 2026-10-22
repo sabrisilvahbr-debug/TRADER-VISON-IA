@@ -8,8 +8,8 @@ interface AuthProps {
 
 export default function Auth({ onSuccess, onBack }: AuthProps) {
   const [mode, setMode] = useState<AuthMode>('login')
-  const [email, setEmail] = useState('trader@demo.com')
-  const [password, setPassword] = useState('123456')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
