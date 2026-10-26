@@ -1,5 +1,18 @@
+export type Tendencia = 'Alta' | 'Baixa' | 'Lateral'
+export type Decisao = 'ENTRAR' | 'ESPERAR' | 'EVITAR'
+export type Perfil = 'conservador' | 'moderado' | 'agressivo'
+
+/** Posições verticais aproximadas, de 0 (topo da imagem) a 1 (base). */
+export interface NiveisY {
+  suporte?: number
+  resistencia?: number
+  entrada?: number
+  stop?: number
+  take_profit?: number
+}
+
 export interface AnalysisResult {
-  tendencia: 'Alta' | 'Baixa' | 'Lateral'
+  tendencia: Tendencia
   suporte: string
   resistencia: string
   padrao: string
@@ -7,22 +20,24 @@ export interface AnalysisResult {
   stop: string
   take_profit: string
   confianca: number
-  decisao: 'ENTRAR' | 'ESPERAR' | 'EVITAR'
+  decisao: Decisao
   explicacao: string
+  riscos: string
+  ativo: string
+  timeframe: string
+  niveis_y?: NiveisY
+}
+
+export interface Contexto {
+  ativo: string
+  timeframe: string
+  perfil: Perfil
 }
 
 export interface HistoryEntry {
   id: number
-  result: AnalysisResult
-  image: string
   date: string
+  thumb: string
+  contexto: Contexto
+  result: AnalysisResult
 }
-
-export interface User {
-  email: string
-  name: string
-}
-
-export type AppScreen = 'landing' | 'auth' | 'dashboard'
-export type DashTab = 'analyze' | 'history'
-export type AuthMode = 'login' | 'register'
