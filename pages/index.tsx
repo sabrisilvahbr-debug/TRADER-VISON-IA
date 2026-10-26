@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import ChartCanvas from '../components/ChartCanvas'
 import Verdict from '../components/Verdict'
 import History from '../components/History'
+import ApiKeyPanel from '../components/ApiKeyPanel'
 import { AnalysisResult, Contexto, HistoryEntry, Perfil } from '../lib/types'
 import { resizeImage } from '../lib/levels'
 
 const STORAGE_KEY = 'trader-vision-history-v1'
+const KEY_STORAGE = 'trader-vision-gemini-key'
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D', '1W']
 const PERFIS: { value: Perfil; label: string }[] = [
   { value: 'conservador', label: 'Conservador' },
@@ -40,9 +42,18 @@ export default function Home() {
   const [contexto, setContexto] = useState<Contexto>({ ativo: '', timeframe: '15m', perfil: 'moderado' })
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
+  const [apiKey, setApiKey] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => setHistory(loadHistory()), [])
+  useEffect(() => {
+    setHistory(loadHistory())
+    try { setApiKey(localStorage.getItem(KEY_STORAGE) || '') } catch { /* sem armazenamento */ }
+  }, [])
+
+  const updateKey = (k: string) => {
+    setApiKey(k)
+    try { k ? localStorage.setItem(KEY_STORAGE, k) : localStorage.removeItem(KEY_STORAGE) } catch { /* sem armazenamento */ }
+  }
 
   const loadFile = useCallback(async (file: File) => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
@@ -79,7 +90,7 @@ export default function Home() {
     try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'x-user-gemini-key': apiKey } : {}) },
         body: JSON.stringify({ imageData: base64, mimeType: 'image/jpeg', contexto }),
       })
       const data = await res.json()
@@ -198,6 +209,8 @@ export default function Home() {
         </div>
 
         <aside className="space-y-4">
+          <ApiKeyPanel value={apiKey} onChange={updateKey} highlight={/chave/i.test(error)} />
+
           <fieldset className="rounded-lg border border-rule bg-sheet p-5">
             <legend className="px-1 text-sm font-medium text-ink-soft">Contexto (opcional)</legend>
             <label className="block text-sm" htmlFor="ativo">Ativo</label>
