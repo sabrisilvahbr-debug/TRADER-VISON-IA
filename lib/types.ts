@@ -1,3 +1,5 @@
+import type { MarketData } from './market'
+
 export type Tendencia = 'Alta' | 'Baixa' | 'Lateral'
 export type Decisao = 'ENTRAR' | 'ESPERAR' | 'EVITAR'
 export type Perfil = 'conservador' | 'moderado' | 'agressivo'
@@ -40,4 +42,5 @@ export interface HistoryEntry {
   thumb: string
   contexto: Contexto
   result: AnalysisResult
+  mercado?: MarketData
 }
