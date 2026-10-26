@@ -35,6 +35,7 @@ Regras:
 - Use apenas o que é visível no gráfico; não invente níveis ilegíveis (use "—").
 - Se a imagem não for um gráfico financeiro, use decisao "EVITAR", confianca 55 e explique.
 - "explicacao": 2-3 frases em português justificando o setup e a decisão.
+- Se houver "Dados reais de mercado", use-os para conferir preço e níveis: entrada, stop e alvo devem ser coerentes com o preço atual. Se o gráfico divergir dos dados, diga em "riscos".
 - Isto é análise educacional, não recomendação de investimento.`
 
 // Para provedores sem schema nativo: descreve o JSON esperado no próprio prompt.
@@ -75,6 +76,18 @@ class ProviderError extends Error {
   constructor(public status: number, message: string) {
     super(message)
   }
+}
+
+/** Reconstrói o resumo só com números validados; nada do cliente entra como texto livre. */
+function marketContext(m: unknown): string {
+  if (!m || typeof m !== 'object') return ''
+  const o = m as Record<string, unknown>
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? String(Math.round(v * 1e6) / 1e6) : '—')
+  const sym = String(o.symbol ?? '').replace(/[^A-Za-z0-9.^=-]/g, '').slice(0, 20)
+  const trend = ['Alta', 'Baixa', 'Lateral'].includes(String(o.trend)) ? String(o.trend) : '—'
+  const asOf = String(o.asOf ?? '').replace(/[^0-9-]/g, '').slice(0, 10)
+  if (!sym) return ''
+  return `Dados reais de mercado (Alpha Vantage, candles diários, até ${asOf || '—'}): ativo=${sym}, último=${num(o.last)}, RSI14=${num(o.rsi14)}, SMA20=${num(o.sma20)}, SMA50=${num(o.sma50)}, ATR14=${num(o.atr14)}, máxima20=${num(o.high20)}, mínima20=${num(o.low20)}, tendência pelas médias=${trend}.`
 }
 
 const clean = (v: unknown, n: number) => String(v ?? '').replace(/[^\p{L}\p{N} ./:_-]/gu, '').slice(0, n)
@@ -179,7 +192,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim()
   if (rateLimited(ip)) return res.status(429).json({ error: 'Muitas análises seguidas. Aguarde um minuto.' })
 
-  const { imageData, mimeType, contexto } = req.body ?? {}
+  const { imageData, mimeType, contexto, mercado } = req.body ?? {}
   if (typeof imageData !== 'string' || !imageData) return res.status(400).json({ error: 'Imagem não fornecida' })
   if (imageData.length > MAX_BASE64_CHARS) return res.status(413).json({ error: 'Imagem muito grande (máx. ~3,5MB).' })
   if (!ALLOWED_MIME.includes(mimeType)) return res.status(400).json({ error: 'Formato inválido. Use PNG, JPG ou WEBP.' })
@@ -199,13 +212,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!apiKey) return res.status(401).json({ error: `Cole sua chave do ${provider.label} para analisar.` })
 
   const ctx = `Contexto informado: ativo="${clean(contexto?.ativo, 24)}", timeframe="${clean(contexto?.timeframe, 12)}", perfil="${clean(contexto?.perfil, 16)}".`
+  const ctxFull = ctx + (marketContext(mercado) ? '\n' + marketContext(mercado) : '')
   const id: ProviderId = provider.id
 
   try {
     let text: string
-    if (id === 'gemini') text = await callGemini(apiKey, imageData, mimeType, ctx)
-    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctx, true)
-    else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctx, false)
+    if (id === 'gemini') text = await callGemini(apiKey, imageData, mimeType, ctxFull)
+    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctxFull, true)
+    else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctxFull, false)
 
     return res.status(200).json({ result: normalize(parseJson(text)) })
   } catch (error) {

@@ -3,6 +3,9 @@ import ChartCanvas from '../components/ChartCanvas'
 import Verdict from '../components/Verdict'
 import History from '../components/History'
 import ApiKeyPanel from '../components/ApiKeyPanel'
+import AlphaVantagePanel from '../components/AlphaVantagePanel'
+import MarketCard from '../components/MarketCard'
+import { MarketData } from '../lib/market'
 import { AnalysisResult, Contexto, HistoryEntry, Perfil } from '../lib/types'
 import { resizeImage } from '../lib/levels'
 import { DEFAULT_PROVIDER, PROVIDERS, ProviderId } from '../lib/providers'
@@ -10,6 +13,7 @@ import { DEFAULT_PROVIDER, PROVIDERS, ProviderId } from '../lib/providers'
 const STORAGE_KEY = 'trader-vision-history-v1'
 const KEY_PREFIX = 'trader-vision-key-'
 const PROVIDER_STORAGE = 'trader-vision-provider'
+const AV_STORAGE = 'trader-vision-av-key'
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '4h', '1D', '1W']
 const PERFIS: { value: Perfil; label: string }[] = [
   { value: 'conservador', label: 'Conservador' },
@@ -46,6 +50,9 @@ export default function Home() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [provider, setProvider] = useState<ProviderId>(DEFAULT_PROVIDER)
   const [keys, setKeys] = useState<Partial<Record<ProviderId, string>>>({})
+  const [avKey, setAvKey] = useState('')
+  const [market, setMarket] = useState<MarketData | null>(null)
+  const [marketNote, setMarketNote] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -57,6 +64,7 @@ export default function Home() {
         if (k) loaded[p.id] = k
       }
       setKeys(loaded)
+      setAvKey(localStorage.getItem(AV_STORAGE) || '')
       const saved = localStorage.getItem(PROVIDER_STORAGE) as ProviderId | null
       if (saved && PROVIDERS.some(p => p.id === saved)) setProvider(saved)
     } catch { /* sem armazenamento */ }
@@ -67,6 +75,17 @@ export default function Home() {
     try {
       if (k) localStorage.setItem(KEY_PREFIX + id, k)
       else localStorage.removeItem(KEY_PREFIX + id)
+    } catch {
+      /* sem armazenamento */
+    }
+  }
+
+  const updateAvKey = (k: string) => {
+    setAvKey(k)
+    setMarketNote('')
+    try {
+      if (k) localStorage.setItem(AV_STORAGE, k)
+      else localStorage.removeItem(AV_STORAGE)
     } catch {
       /* sem armazenamento */
     }
@@ -110,7 +129,29 @@ export default function Home() {
     setAnalyzing(true)
     setError('')
     setResult(null)
+    setMarket(null)
+    setMarketNote('')
     try {
+      // Dados reais do ativo (1 consulta à Alpha Vantage). Se falhar, a análise segue só com o print.
+      let mercado: MarketData | null = null
+      if (avKey && contexto.ativo.trim()) {
+        try {
+          const mr = await fetch('/api/market', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-av-key': avKey },
+            body: JSON.stringify({ symbol: contexto.ativo }),
+          })
+          const md = await mr.json()
+          if (!mr.ok) throw new Error(md.error || 'Falha ao buscar dados de mercado.')
+          mercado = md.market as MarketData
+          setMarket(mercado)
+        } catch (e) {
+          setMarketNote(`${e instanceof Error ? e.message : 'Falha ao buscar dados de mercado.'} A análise seguiu só com o print.`)
+        }
+      } else if (avKey && !contexto.ativo.trim()) {
+        setMarketNote('Informe o ativo no contexto para conferir com dados reais.')
+      }
+
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: {
@@ -118,7 +159,7 @@ export default function Home() {
           'x-provider': provider,
           ...(keys[provider] ? { 'x-user-api-key': keys[provider] as string } : {}),
         },
-        body: JSON.stringify({ imageData: base64, mimeType: 'image/jpeg', contexto }),
+        body: JSON.stringify({ imageData: base64, mimeType: 'image/jpeg', contexto, mercado }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Falha na análise.')
@@ -132,6 +173,7 @@ export default function Home() {
         thumb,
         contexto,
         result: r,
+        ...(mercado ? { mercado } : {}),
       }
       const next = [entry, ...history].slice(0, 12)
       setHistory(next)
@@ -148,12 +190,16 @@ export default function Home() {
     setImage(h.thumb)
     setBase64(null) // miniatura serve só para consulta; envie o print de novo para reanalisar
     setResult(h.result)
+    setMarket(h.mercado ?? null)
+    setMarketNote('')
     setContexto(h.contexto)
     setActiveId(h.id)
     setError('')
   }
 
   const reset = () => {
+    setMarket(null)
+    setMarketNote('')
     setImage(null)
     setBase64(null)
     setResult(null)
@@ -238,6 +284,8 @@ export default function Home() {
         <aside className="space-y-4">
           <ApiKeyPanel provider={provider} keys={keys} onProvider={updateProvider} onKey={updateKey} highlight={/chave|saldo|provedor/i.test(error)} />
 
+          <AlphaVantagePanel value={avKey} onChange={updateAvKey} highlight={false} />
+
           <fieldset className="rounded-lg border border-rule bg-sheet p-5">
             <legend className="px-1 text-sm font-medium text-ink-soft">Contexto (opcional)</legend>
             <label className="block text-sm" htmlFor="ativo">Ativo</label>
@@ -275,6 +323,12 @@ export default function Home() {
               ))}
             </div>
           </fieldset>
+
+          {marketNote && (
+            <p role="status" className="rounded-md bg-mark/40 px-4 py-3 text-sm">{marketNote}</p>
+          )}
+
+          {market && <MarketCard market={market} result={result} />}
 
           {result ? (
             <Verdict result={result} />
