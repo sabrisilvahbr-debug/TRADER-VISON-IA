@@ -52,7 +52,12 @@ export default function Home() {
 
   const updateKey = (k: string) => {
     setApiKey(k)
-    try { k ? localStorage.setItem(KEY_STORAGE, k) : localStorage.removeItem(KEY_STORAGE) } catch { /* sem armazenamento */ }
+    try {
+      if (k) localStorage.setItem(KEY_STORAGE, k)
+      else localStorage.removeItem(KEY_STORAGE)
+    } catch {
+      /* sem armazenamento */
+    }
   }
 
   const loadFile = useCallback(async (file: File) => {
