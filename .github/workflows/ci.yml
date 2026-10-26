@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, melhorias-alphavision]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Instalar dependências
+        run: npm ci
+      - name: Checar tipos
+        run: npx tsc --noEmit
+      - name: Lint
+        run: |
+          set +e
+          npx next lint --max-warnings 0 > lint.txt 2>&1
+          code=$?
+          cat lint.txt
+          if [ $code -ne 0 ]; then
+            echo "::error title=Resultado do lint::$(head -c 1800 lint.txt | tr '\n' '|' | sed 's/%/%25/g')"
+          fi
+          exit $code
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1

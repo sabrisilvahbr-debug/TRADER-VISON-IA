@@ -75,8 +75,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (imageData.length > MAX_BASE64_CHARS) return res.status(413).json({ error: 'Imagem muito grande (máx. ~3,5MB).' })
   if (!ALLOWED_MIME.includes(mimeType)) return res.status(400).json({ error: 'Formato inválido. Use PNG, JPG ou WEBP.' })
 
-  const apiKey = process.env.GOOGLE_GEMINI_API_KEY
-  if (!apiKey) return res.status(500).json({ error: 'Serviço de análise não configurado.' })
+  // Chave gratuita do próprio usuário (Google AI Studio). Não é salva nem registrada no servidor.
+  const header = req.headers['x-user-gemini-key']
+  const userKey = typeof header === 'string' ? header.trim() : ''
+  if (userKey && !/^AIza[0-9A-Za-z_-]{30,60}$/.test(userKey)) {
+    return res.status(401).json({ error: 'A chave informada não parece válida. Copie-a de novo no Google AI Studio.' })
+  }
+  const apiKey = userKey || process.env.GOOGLE_GEMINI_API_KEY
+  if (!apiKey) {
+    return res.status(401).json({ error: 'Cole sua chave gratuita do Google AI Studio para analisar.' })
+  }
 
   try {
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
@@ -95,7 +103,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
     return res.status(200).json({ result: parsed })
   } catch (error) {
-    console.error('Gemini API error:', error)
+    const msg = error instanceof Error ? error.message : ''
+    if (/API key not valid|API_KEY_INVALID|permission/i.test(msg)) {
+      return res.status(401).json({ error: 'Chave recusada pelo Google. Gere outra no AI Studio e cole de novo.' })
+    }
+    if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
+      return res.status(429).json({ error: 'Limite gratuito do Google atingido. Aguarde um minuto e tente de novo.' })
+    }
+    console.error('Gemini API error:', msg.slice(0, 200))
     return res.status(502).json({ error: 'Não foi possível analisar o gráfico agora. Tente novamente.' })
   }
 }
