@@ -2,11 +2,11 @@ import type { NextApiRequest, NextApiResponse } from 'next'
 import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
 import { getProvider, ProviderId } from '../../lib/providers'
 
-export const config = { api: { bodyParser: { sizeLimit: '6mb' } } }
+export const config = { api: { bodyParser: { sizeLimit: '6mb' } }, maxDuration: 60 }
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'google/gemma-3-27b-it:free'
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free'
 const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp']
 const MAX_BASE64_CHARS = 5 * 1024 * 1024 // ~3,7MB de imagem
 const RATE_LIMIT = 10 // análises por janela, por IP
@@ -101,6 +101,20 @@ async function callGemini(key: string, image: string, mime: string, ctx: string)
   return out.response.text()
 }
 
+/** Extrai a mensagem de erro legível do corpo de uma resposta de erro (OpenAI/OpenRouter). */
+function providerMessage(body: string): string {
+  try {
+    const j = JSON.parse(body)
+    const raw = j?.error?.metadata?.raw
+    const msg = typeof raw === 'string' && raw ? raw : j?.error?.message ?? j?.message ?? ''
+    return String(msg).replace(/\s+/g, ' ').slice(0, 180)
+  } catch {
+    return body.replace(/\s+/g, ' ').slice(0, 120)
+  }
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
 async function callChat(
   url: string,
   key: string,
@@ -109,39 +123,64 @@ async function callChat(
   mime: string,
   ctx: string,
   jsonMode: boolean,
+  attempts: number,
 ): Promise<string> {
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      max_tokens: 1200,
-      ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: `${PROMPT}\n${JSON_SPEC}\n${ctx}` },
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${image}` } },
-          ],
-        },
-      ],
-    }),
+  const body = JSON.stringify({
+    model,
+    temperature: 0.2,
+    max_tokens: 1500,
+    ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `${PROMPT}\n${JSON_SPEC}\n${ctx}` },
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${image}` } },
+        ],
+      },
+    ],
   })
-  if (!r.ok) {
-    const body = await r.text().catch(() => '')
+
+  let last: ProviderError = new ProviderError(502, 'O provedor não respondeu.')
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(900)
+    let r: Response
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body,
+        signal: AbortSignal.timeout(40_000),
+      })
+    } catch {
+      last = new ProviderError(504, 'O provedor demorou demais para responder.')
+      continue
+    }
+
+    const raw = await r.text().catch(() => '')
+
+    if (r.ok) {
+      let data: { choices?: { message?: { content?: unknown } }[]; error?: { message?: string } } = {}
+      try { data = JSON.parse(raw) } catch { /* trata abaixo */ }
+      const c = data.choices?.[0]?.message?.content
+      const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p?.text ?? '').join('') : ''
+      if (text.trim()) return text
+      // OpenRouter às vezes devolve 200 com erro do modelo escolhido: tenta de novo (outro modelo)
+      last = new ProviderError(502, `O modelo não devolveu uma resposta${data.error?.message ? `: ${String(data.error.message).slice(0, 120)}` : '.'}`)
+      continue
+    }
+
     if (r.status === 401 || r.status === 403) throw new ProviderError(401, 'Chave recusada pelo provedor. Gere outra e cole de novo.')
-    if (r.status === 402 || /insufficient_quota|insufficient credits/i.test(body)) {
+    if (r.status === 402 || /insufficient_quota|insufficient credits/i.test(raw)) {
       throw new ProviderError(402, 'Sem saldo nesta conta. Adicione créditos ou escolha um provedor gratuito.')
     }
-    if (r.status === 429) throw new ProviderError(429, 'Limite do provedor atingido. Aguarde um minuto e tente de novo.')
-    throw new ProviderError(502, 'O provedor não conseguiu analisar o gráfico agora.')
+
+    const detail = providerMessage(raw)
+    if (r.status === 429) last = new ProviderError(429, 'Limite do provedor atingido (modelos gratuitos ficam lotados). Tente de novo em instantes.')
+    else if (r.status === 404 || r.status >= 500) last = new ProviderError(502, `Modelo indisponível no provedor agora${detail ? `: ${detail}` : '.'}`)
+    else throw new ProviderError(502, `O provedor recusou a análise (código ${r.status})${detail ? `: ${detail}` : '.'}`)
   }
-  const data = await r.json()
-  const text = data?.choices?.[0]?.message?.content
-  if (typeof text !== 'string' || !text) throw new ProviderError(502, 'O modelo não devolveu uma resposta.')
-  return text
+  throw last
 }
 
 /** Aceita JSON puro, com cercas de markdown ou com texto em volta. */
@@ -218,8 +257,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     let text: string
     if (id === 'gemini') text = await callGemini(apiKey, imageData, mimeType, ctxFull)
-    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctxFull, true)
-    else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctxFull, false)
+    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctxFull, true, 2)
+    else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctxFull, false, 3)
 
     return res.status(200).json({ result: normalize(parseJson(text)) })
   } catch (error) {
