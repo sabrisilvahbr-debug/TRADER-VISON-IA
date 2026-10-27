@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "tsc -p tsconfig.test.json && node --test \"tests/unit/*.test.mjs\"",
+    "test:e2e": "tsc -p tsconfig.test.json && node --test \"tests/integration/*.test.mjs\""
   },
   "dependencies": {
     "next": "15.3.8",

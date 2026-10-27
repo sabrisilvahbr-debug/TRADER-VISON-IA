@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { PROVIDERS, ProviderId, getProvider } from '../lib/providers'
+import { PROVIDERS, ProviderId, checkKey, cleanKey, getProvider } from '../lib/providers'
 
 interface Props {
   provider: ProviderId
@@ -13,7 +13,8 @@ export default function ApiKeyPanel({ provider, keys, onProvider, onKey, highlig
   const [draft, setDraft] = useState('')
   const info = getProvider(provider)!
   const saved = keys[provider] ?? ''
-  const invalid = draft.trim().length > 0 && !info.keyPattern.test(draft.trim())
+  const check = draft.trim() ? checkKey(provider, draft) : { ok: true as boolean, reason: undefined }
+  const invalid = !check.ok
 
   return (
     <section className={`rounded-lg border bg-sheet p-5 ${highlight ? 'border-bear' : 'border-rule'}`}>
@@ -62,8 +63,8 @@ export default function ApiKeyPanel({ provider, keys, onProvider, onKey, highlig
             className="mt-2 flex gap-2"
             onSubmit={e => {
               e.preventDefault()
-              const k = draft.trim()
-              if (k && info.keyPattern.test(k)) { onKey(provider, k); setDraft('') }
+              const k = cleanKey(draft)
+              if (k && checkKey(provider, k).ok) { onKey(provider, k); setDraft('') }
             }}
           >
             <label htmlFor="api-key" className="sr-only">Chave do {info.label}</label>
@@ -82,7 +83,8 @@ export default function ApiKeyPanel({ provider, keys, onProvider, onKey, highlig
               Salvar
             </button>
           </form>
-          {invalid && <p className="mt-1.5 text-xs text-bear">Esta chave não parece ser do {info.label}.</p>}
+          {invalid && <p className="mt-1.5 text-xs text-bear">{check.reason}</p>}
+          {info.keyNote && <p className="mt-2 text-xs leading-relaxed text-ink-soft">{info.keyNote}</p>}
         </>
       )}
 

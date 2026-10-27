@@ -1,10 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next'
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai'
-import { getProvider, ProviderId } from '../../lib/providers'
+import { getProvider, checkKey, ProviderId } from '../../lib/providers'
+import { GeminiError, generateText, redact } from '../../lib/gemini'
 
 export const config = { api: { bodyParser: { sizeLimit: '6mb' } }, maxDuration: 60 }
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free'
 const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp']
@@ -42,36 +41,6 @@ Regras:
 const JSON_SPEC = `Responda SOMENTE com um objeto JSON válido. Sem raciocínio, sem markdown, sem texto antes ou depois: a resposta deve começar com { e terminar com }. Use exatamente estes campos:
 {"tendencia":"Alta|Baixa|Lateral","suporte":"texto","resistencia":"texto","padrao":"texto","entrada":"texto","stop":"texto","take_profit":"texto","confianca":0-100,"decisao":"ENTRAR|ESPERAR|EVITAR","explicacao":"texto","riscos":"texto","ativo":"texto","timeframe":"texto","niveis_y":{"suporte":0-1,"resistencia":0-1,"entrada":0-1,"stop":0-1,"take_profit":0-1}}`
 
-const geminiSchema = {
-  type: SchemaType.OBJECT,
-  properties: {
-    tendencia: { type: SchemaType.STRING, format: 'enum', enum: ['Alta', 'Baixa', 'Lateral'] },
-    suporte: { type: SchemaType.STRING },
-    resistencia: { type: SchemaType.STRING },
-    padrao: { type: SchemaType.STRING },
-    entrada: { type: SchemaType.STRING },
-    stop: { type: SchemaType.STRING },
-    take_profit: { type: SchemaType.STRING },
-    confianca: { type: SchemaType.INTEGER },
-    decisao: { type: SchemaType.STRING, format: 'enum', enum: ['ENTRAR', 'ESPERAR', 'EVITAR'] },
-    explicacao: { type: SchemaType.STRING },
-    riscos: { type: SchemaType.STRING },
-    ativo: { type: SchemaType.STRING },
-    timeframe: { type: SchemaType.STRING },
-    niveis_y: {
-      type: SchemaType.OBJECT,
-      properties: {
-        suporte: { type: SchemaType.NUMBER },
-        resistencia: { type: SchemaType.NUMBER },
-        entrada: { type: SchemaType.NUMBER },
-        stop: { type: SchemaType.NUMBER },
-        take_profit: { type: SchemaType.NUMBER },
-      },
-    },
-  },
-  required: ['tendencia', 'suporte', 'resistencia', 'padrao', 'entrada', 'stop', 'take_profit', 'confianca', 'decisao', 'explicacao', 'riscos', 'ativo', 'timeframe'],
-}
-
 class ProviderError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -93,12 +62,18 @@ function marketContext(m: unknown): string {
 const clean = (v: unknown, n: number) => String(v ?? '').replace(/[^\p{L}\p{N} ./:_-]/gu, '').slice(0, n)
 
 async function callGemini(key: string, image: string, mime: string, ctx: string): Promise<string> {
-  const model = new GoogleGenerativeAI(key).getGenerativeModel({
-    model: GEMINI_MODEL,
-    generationConfig: { responseMimeType: 'application/json', responseSchema: geminiSchema, temperature: 0.2 },
-  })
-  const out = await model.generateContent([{ inlineData: { data: image, mimeType: mime } }, PROMPT + '\n' + ctx])
-  return out.response.text()
+  const prompt = `${PROMPT}\n${JSON_SPEC}\n${ctx}`
+  let last: unknown = new ProviderError(502, 'O modelo não devolveu uma resposta.')
+  for (let i = 0; i < 2; i++) {
+    const { text } = await generateText({ apiKey: key, prompt, image: { data: image, mime } })
+    try {
+      parseJson(text)
+      return text
+    } catch (e) {
+      last = e // resposta fora do formato: tenta de novo
+    }
+  }
+  throw last
 }
 
 /** Extrai a mensagem de erro legível do corpo de uma resposta de erro (OpenAI/OpenRouter). */
@@ -275,6 +250,15 @@ function normalize(p: Record<string, unknown>) {
   }
 }
 
+/** Confere a assinatura real do arquivo (PNG, JPEG ou WEBP), sem confiar no tipo declarado. */
+function looksLikeImage(b64: string): boolean {
+  const b = Buffer.from(b64.slice(0, 48), 'base64')
+  const png = b.length > 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47
+  const jpeg = b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff
+  const webp = b.length > 12 && b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP'
+  return png || jpeg || webp
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método não permitido' })
 
@@ -285,6 +269,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (typeof imageData !== 'string' || !imageData) return res.status(400).json({ error: 'Imagem não fornecida' })
   if (imageData.length > MAX_BASE64_CHARS) return res.status(413).json({ error: 'Imagem muito grande (máx. ~3,5MB).' })
   if (!ALLOWED_MIME.includes(mimeType)) return res.status(400).json({ error: 'Formato inválido. Use PNG, JPG ou WEBP.' })
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(imageData) || !looksLikeImage(imageData)) {
+    return res.status(400).json({ error: 'O arquivo enviado não é uma imagem válida (PNG, JPG ou WEBP).' })
+  }
 
   // A chave é do próprio usuário. Não é salva nem registrada no servidor.
   const providerHeader = String(req.headers['x-provider'] || 'gemini')
@@ -293,8 +280,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const header = req.headers['x-user-api-key'] ?? req.headers['x-user-gemini-key']
   const userKey = typeof header === 'string' ? header.trim() : ''
-  if (userKey && !provider.keyPattern.test(userKey)) {
-    return res.status(401).json({ error: `A chave não parece ser do ${provider.label}. Copie-a de novo.` })
+  if (userKey) {
+    const check = checkKey(provider.id, userKey)
+    if (!check.ok) return res.status(401).json({ error: check.reason ?? 'Chave inválida.' })
   }
   const envKey = provider.id === 'gemini' ? process.env.GOOGLE_GEMINI_API_KEY : undefined
   const apiKey = userKey || envKey
@@ -312,14 +300,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({ result: normalize(parseJson(text)) })
   } catch (error) {
-    if (error instanceof ProviderError) return res.status(error.status).json({ error: error.message })
-    const msg = error instanceof Error ? error.message : ''
-    if (/API key not valid|API_KEY_INVALID|permission/i.test(msg)) {
-      return res.status(401).json({ error: 'Chave recusada pelo Google. Gere outra no AI Studio e cole de novo.' })
+    if (error instanceof ProviderError || error instanceof GeminiError) {
+      return res.status(error.status).json({ error: error.message })
     }
-    if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
-      return res.status(429).json({ error: 'Limite gratuito do Google atingido. Aguarde um minuto e tente de novo.' })
-    }
+    // Nunca registra a chave: o texto do erro passa pela redação antes de ir para o log.
+    const msg = redact(error instanceof Error ? error.message : '', apiKey)
     console.error('Analysis error:', id, msg.slice(0, 200))
     return res.status(502).json({ error: 'Não foi possível analisar o gráfico agora. Tente novamente.' })
   }
