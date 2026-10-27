@@ -39,7 +39,7 @@ Regras:
 - Isto é análise educacional, não recomendação de investimento.`
 
 // Para provedores sem schema nativo: descreve o JSON esperado no próprio prompt.
-const JSON_SPEC = `Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto extra, com exatamente estes campos:
+const JSON_SPEC = `Responda SOMENTE com um objeto JSON válido. Sem raciocínio, sem markdown, sem texto antes ou depois: a resposta deve começar com { e terminar com }. Use exatamente estes campos:
 {"tendencia":"Alta|Baixa|Lateral","suporte":"texto","resistencia":"texto","padrao":"texto","entrada":"texto","stop":"texto","take_profit":"texto","confianca":0-100,"decisao":"ENTRAR|ESPERAR|EVITAR","explicacao":"texto","riscos":"texto","ativo":"texto","timeframe":"texto","niveis_y":{"suporte":0-1,"resistencia":0-1,"entrada":0-1,"stop":0-1,"take_profit":0-1}}`
 
 const geminiSchema = {
@@ -128,7 +128,7 @@ async function callChat(
   const body = JSON.stringify({
     model,
     temperature: 0.2,
-    max_tokens: 1500,
+    max_tokens: 3000,
     ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
     messages: [
       {
@@ -164,7 +164,16 @@ async function callChat(
       try { data = JSON.parse(raw) } catch { /* trata abaixo */ }
       const c = data.choices?.[0]?.message?.content
       const text = typeof c === 'string' ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p?.text ?? '').join('') : ''
-      if (text.trim()) return text
+      if (text.trim()) {
+        try {
+          parseJson(text)
+          return text
+        } catch {
+          console.error('Resposta fora do formato (início):', text.slice(0, 160).replace(/\s+/g, ' '))
+          last = new ProviderError(502, 'A resposta do modelo veio em formato inesperado. Tente de novo.')
+          continue
+        }
+      }
       // OpenRouter às vezes devolve 200 com erro do modelo escolhido: tenta de novo (outro modelo)
       last = new ProviderError(502, `O modelo não devolveu uma resposta${data.error?.message ? `: ${String(data.error.message).slice(0, 120)}` : '.'}`)
       continue
@@ -183,16 +192,57 @@ async function callChat(
   throw last
 }
 
-/** Aceita JSON puro, com cercas de markdown ou com texto em volta. */
-function parseJson(text: string): Record<string, unknown> {
-  const stripped = text.replace(/```json\s*/gi, '').replace(/```/g, '').trim()
-  try {
-    return JSON.parse(stripped)
-  } catch {
-    const m = stripped.match(/\{[\s\S]*\}/)
-    if (!m) throw new ProviderError(502, 'A resposta do modelo veio em formato inesperado. Tente de novo.')
-    return JSON.parse(m[0])
+/** Primeiro objeto {...} do texto, respeitando aspas. Se a resposta foi cortada, fecha o que ficou aberto. */
+function extractObject(text: string): string | null {
+  const start = text.indexOf('{')
+  if (start < 0) return null
+  const stack: string[] = []
+  let inStr = false
+  let esc = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (ch === '\\') esc = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') inStr = true
+    else if (ch === '{') stack.push('}')
+    else if (ch === '[') stack.push(']')
+    else if (ch === '}' || ch === ']') {
+      stack.pop()
+      if (stack.length === 0) return text.slice(start, i + 1)
+    }
   }
+  // Truncado: remove cauda incompleta e fecha as estruturas abertas
+  let t = text.slice(start)
+  if (inStr) t += '"'
+  t = t.replace(/[,:\s]+$/, '').replace(/,\s*"[^"]*"$/, '')
+  return t + stack.reverse().join('')
+}
+
+/** Aceita JSON puro, com cercas de markdown, raciocínio (<think>), texto em volta, vírgulas sobrando ou resposta cortada. */
+function parseJson(text: string): Record<string, unknown> {
+  const cleaned = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<think>[\s\S]*$/i, '')
+    .replace(/```(?:json)?/gi, '')
+    .replace(/[\u201C\u201D]/g, '"')
+    .trim()
+  const candidates = [cleaned, extractObject(cleaned)]
+  for (const c of candidates) {
+    if (!c) continue
+    for (const attempt of [c, c.replace(/,\s*([}\]])/g, '$1')]) {
+      try {
+        const v = JSON.parse(attempt)
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>
+      } catch {
+        /* tenta a próxima variação */
+      }
+    }
+  }
+  throw new ProviderError(502, 'A resposta do modelo veio em formato inesperado. Tente de novo.')
 }
 
 function normalize(p: Record<string, unknown>) {
