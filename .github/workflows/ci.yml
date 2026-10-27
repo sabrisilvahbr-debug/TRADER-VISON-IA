@@ -32,6 +32,8 @@ jobs:
             echo "::error title=Resultado do lint::$(head -c 1800 lint.txt | tr '\n' '|' | sed 's/%/%25/g')"
           fi
           exit $code
+      - name: Testes
+        run: npm test
       - name: Build
         run: npm run build
         env:
