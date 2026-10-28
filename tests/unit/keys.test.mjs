@@ -49,3 +49,10 @@ test('OpenAI e OpenRouter continuam com o formato próprio', () => {
   assert.equal(checkKey('openrouter', 'sk-or-' + 'a'.repeat(40)).ok, true)
   assert.equal(checkKey('openrouter', 'AQ.' + 'a'.repeat(40)).ok, false)
 })
+
+test('Z.ai: sem prefixo obrigatório, mesmas regras de cabeçalho seguro', () => {
+  assert.equal(checkKey('zai', 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.AbCdEfGh12345678').ok, true)
+  assert.equal(checkKey('zai', '  ' + 'k'.repeat(30) + '\n').ok, true)
+  assert.equal(checkKey('zai', 'com espaco' + 'x'.repeat(20)).ok, false)
+  assert.equal(checkKey('zai', '').ok, false)
+})

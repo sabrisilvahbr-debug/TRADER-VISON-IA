@@ -60,7 +60,7 @@ test('modelo indisponível (404): tenta o próximo modelo e só então responde'
   const { rec, promise } = run([err(404, { error: { message: 'not found' } }), err(404), ok('{"ok":true}')])
   const out = await promise
   assert.equal(out.text, '{"ok":true}')
-  assert.deepEqual(rec.calls.map(c => c.url.match(/models\/([^:]+):/)[1]), ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash'])
+  assert.deepEqual(rec.calls.map(c => c.url.match(/models\/([^:]+):/)[1]), ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash'])
 })
 
 test('todos os modelos indisponíveis: erro claro, sem análise inventada', async () => {
@@ -111,9 +111,47 @@ test('resposta sem texto não vira análise fictícia', async () => {
   await assert.rejects(promise, e => e instanceof GeminiError && /não devolveu texto/.test(e.message))
 })
 
-test('falha de rede vira erro claro', async () => {
-  const { promise } = run([new Error(`ECONNRESET ${KEY}`)])
-  await assert.rejects(promise, e => e.status === 504 && !e.message.includes(KEY))
+test('falha de rede vira erro claro, com o código técnico e sem a chave', async () => {
+  const boom = Object.assign(new TypeError(`fetch failed ${KEY}`), { cause: { code: 'ENOTFOUND' } })
+  const { promise } = run([boom])
+  await assert.rejects(promise, e => e.status === 504 && /Falha de conexão/.test(e.message) && /ENOTFOUND/.test(e.message) && !e.message.includes(KEY))
+})
+
+test('tempo esgotado é dito como tempo esgotado, não como "rede"', async () => {
+  const t = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' })
+  const { promise } = run([t])
+  await assert.rejects(promise, e => e.status === 504 && /demorou mais de \d+ s/.test(e.message))
+})
+
+test('tempo esgotado no primeiro modelo: tenta o próximo, mais leve', async () => {
+  const t = Object.assign(new Error('timeout'), { name: 'TimeoutError' })
+  const { rec, promise } = run([t, ok('{"ok":1}')])
+  assert.equal((await promise).text, '{"ok":1}')
+  assert.equal(rec.calls.length, 2)
+  assert.match(rec.calls[1].url, /gemini-3\.5-flash-lite/)
+})
+
+test('sem orçamento de tempo, não inicia outra tentativa', async () => {
+  const t = Object.assign(new Error('timeout'), { name: 'TimeoutError' })
+  const { rec, promise } = run([t], { deadline: Date.now() + 2_000 })
+  await assert.rejects(promise, e => e.status === 504)
+  assert.equal(rec.calls.length, 1)
+})
+
+test('modelos Gemini 3: raciocínio em nível baixo (thinkingLevel documentado)', async () => {
+  const { rec, promise } = run([ok('x')])
+  await promise
+  const body = JSON.parse(rec.calls[0].init.body)
+  assert.deepEqual(body.generationConfig, { thinkingConfig: { thinkingLevel: 'low' } })
+})
+
+test('modelo 2.5 não recebe thinkingLevel (parâmetro é só do Gemini 3)', async () => {
+  const { rec, promise } = run([err(404), err(404), ok('x')])
+  await promise
+  const bodies = rec.calls.map(c => JSON.parse(c.init.body))
+  assert.ok(bodies[0].generationConfig && bodies[1].generationConfig)
+  assert.equal(bodies[2].generationConfig, undefined)
+  assert.match(rec.calls[2].url, /gemini-2\.5-flash/)
 })
 
 test('redact remove a chave e qualquer coisa parecida com chave', () => {

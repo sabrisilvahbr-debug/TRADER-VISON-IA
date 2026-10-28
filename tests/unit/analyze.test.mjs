@@ -111,3 +111,83 @@ test('sem chave: pede a chave e não chama a API', async () => {
   assert.equal(r.code, 401)
   assert.equal(r.seen.length, 0)
 })
+
+// ---------- Z.ai (GLM-5.3-Flash) ----------
+const ZKEY = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.AbCdEfGh12345678'
+const zOk = obj => ({ ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { role: 'assistant', content: typeof obj === 'string' ? obj : JSON.stringify(obj), reasoning_content: 'pensando...' } }] }) })
+const zErr = (status, body = {}) => ({ ok: false, status, text: async () => JSON.stringify(body) })
+const zai = (opts = {}) => call({ ...opts, key: opts.key === undefined ? ZKEY : opts.key, headers: { 'x-provider': 'zai', ...(opts.headers || {}) } })
+
+test('Z.ai: endpoint, Bearer, modelo glm-5.3-flash e imagem real em image_url', async () => {
+  const r = await zai({ responses: [zOk(GOOD)] })
+  assert.equal(r.code, 200)
+  assert.equal(r.body.result.decisao, 'ENTRAR')
+  const { url, init } = r.seen[0]
+  assert.equal(url, 'https://api.z.ai/api/paas/v4/chat/completions')
+  assert.equal(init.headers.Authorization, `Bearer ${ZKEY}`)
+  const body = JSON.parse(init.body)
+  assert.equal(body.model, 'glm-5.3-flash')
+  assert.equal(body.reasoning_effort, 'low')
+  assert.equal(body.response_format, undefined, 'json_object é só de modelos de texto na Z.ai')
+  const img = body.messages[0].content.find(p => p.type === 'image_url')
+  assert.equal(img.image_url.url, `data:image/png;base64,${PNG}`)
+  assert.ok(!url.includes(ZKEY) && !init.body.includes(ZKEY))
+})
+
+test('Z.ai: usa ZAI_API_KEY do servidor quando o usuário não colou chave', async () => {
+  process.env.ZAI_API_KEY = ZKEY
+  try {
+    const r = await zai({ responses: [zOk(GOOD)], key: '' })
+    assert.equal(r.code, 200)
+    assert.equal(r.seen[0].init.headers.Authorization, `Bearer ${ZKEY}`)
+    assert.ok(!JSON.stringify(r.body).includes(ZKEY), 'a chave do servidor nunca volta ao navegador')
+  } finally { delete process.env.ZAI_API_KEY }
+})
+
+test('Z.ai: a chave do usuário tem prioridade sobre a do servidor', async () => {
+  process.env.ZAI_API_KEY = 'chave-do-servidor-1234567890'
+  try {
+    const r = await zai({ responses: [zOk(GOOD)] })
+    assert.equal(r.seen[0].init.headers.Authorization, `Bearer ${ZKEY}`)
+  } finally { delete process.env.ZAI_API_KEY }
+})
+
+test('Z.ai: sem chave nenhuma, pede a chave e não chama a API', async () => {
+  delete process.env.ZAI_API_KEY
+  const r = await zai({ responses: [zOk(GOOD)], key: '' })
+  assert.equal(r.code, 401)
+  assert.equal(r.seen.length, 0)
+})
+
+test('Z.ai: chave recusada (401), sem saldo e limite viram mensagens próprias, sem análise', async () => {
+  let r = await zai({ responses: [zErr(401, { error: { code: '1000', message: 'Authentication failed' } })] })
+  assert.equal(r.code, 401); assert.equal(r.body.result, undefined)
+  r = await zai({ responses: [zErr(429, { error: { code: '1113', message: 'Insufficient balance or no resource package' } })] })
+  assert.equal(r.code, 402); assert.match(r.body.error, /Sem saldo/)
+  r = await zai({ responses: [zErr(429, { error: { code: '1305', message: 'rate limit' } })] })
+  assert.equal(r.code, 429); assert.equal(r.body.result, undefined)
+})
+
+test('Z.ai: lê o JSON ignorando o raciocínio e repete se a resposta vier fora do formato', async () => {
+  const r = await zai({ responses: [zOk('Vou pensar...'), zOk('<think>hm {x}</think>' + JSON.stringify(GOOD))] })
+  assert.equal(r.code, 200)
+  assert.equal(r.seen.length, 2)
+})
+
+test('Z.ai: rejeita WEBP (a Z.ai documenta só JPG/PNG) sem chamar a API', async () => {
+  const r = await zai({ responses: [zOk(GOOD)], mime: 'image/webp' })
+  assert.equal(r.code, 400)
+  assert.equal(r.seen.length, 0)
+})
+
+test('Z.ai: tempo esgotado é informado como tal e nunca vira análise', async () => {
+  const t = Object.assign(new Error('timeout'), { name: 'TimeoutError' })
+  const seen = []
+  global.fetch = async () => { seen.push(1); throw t }
+  const out = {}
+  const res = { status(c) { out.code = c; return this }, json(b) { out.body = b; return this } }
+  await handler({ method: 'POST', socket: {}, headers: { 'x-provider': 'zai', 'x-user-api-key': ZKEY, 'x-forwarded-for': `z${n++}` }, body: { imageData: PNG, mimeType: 'image/png', contexto: {} } }, res)
+  assert.equal(out.code, 504)
+  assert.match(out.body.error, /demorou mais de \d+ s/)
+  assert.equal(out.body.result, undefined)
+})

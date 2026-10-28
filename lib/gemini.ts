@@ -14,7 +14,7 @@ export const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta'
 /** Modelo recomendado pela documentação para projetos novos primeiro; os demais são reserva. */
 export function geminiModels(): string[] {
   const forced = process.env.GEMINI_MODEL
-  return forced ? [forced] : ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash']
+  return forced ? [forced] : ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash']
 }
 
 export class GeminiError extends Error {
@@ -43,7 +43,14 @@ export interface GeminiParams {
   prompt: string
   image?: GeminiImage
   fetchImpl?: typeof fetch
+  /** Instante (ms desde 1970) em que a chamada inteira deve terminar. Padrão: 52 s a partir de agora. */
+  deadline?: number
 }
+
+/** Tempo máximo de cada tentativa; o orçamento total (deadline) manda se for menor. */
+const ATTEMPT_MS = 40_000
+/** Abaixo disto não vale a pena iniciar outra tentativa. */
+const MIN_ATTEMPT_MS = 6_000
 
 interface Attempt {
   retryNext: boolean
@@ -100,7 +107,21 @@ function describeError(status: number, body: string, apiKey: string): Attempt {
   return { retryNext: false, error: new GeminiError(502, `Resposta inesperada do Google (código ${status}).`) }
 }
 
-async function once(model: string, p: GeminiParams): Promise<{ text: string } | Attempt> {
+function describeNetworkError(e: unknown, timeoutMs: number): Attempt {
+  const name = e instanceof Error ? e.name : ''
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    const secs = Math.round(timeoutMs / 1000)
+    return {
+      retryNext: true,
+      error: new GeminiError(504, `O Google demorou mais de ${secs} s para responder. Tente de novo; se repetir, use outra imagem menor ou outro provedor.`),
+    }
+  }
+  const cause = (e as { cause?: { code?: unknown }; code?: unknown } | undefined)
+  const code = String(cause?.cause?.code ?? cause?.code ?? '').replace(/[^A-Z0-9_]/gi, '').slice(0, 40)
+  return { retryNext: true, error: new GeminiError(504, `Falha de conexão com o Google${code ? ` (${code})` : ''}. Tente de novo.`) }
+}
+
+async function once(model: string, p: GeminiParams, timeoutMs: number): Promise<{ text: string } | Attempt> {
   const doFetch = p.fetchImpl ?? fetch
   const parts: Record<string, unknown>[] = []
   if (p.image) parts.push({ inline_data: { mime_type: p.image.mime, data: p.image.data } })
@@ -111,11 +132,16 @@ async function once(model: string, p: GeminiParams): Promise<{ text: string } | 
     r = await doFetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': p.apiKey },
-      body: JSON.stringify({ contents: [{ parts }] }),
-      signal: AbortSignal.timeout(45_000),
+      body: JSON.stringify({
+        contents: [{ parts }],
+        // Nos modelos Gemini 3 o raciocínio padrão é "high" e pode levar dezenas de segundos antes da 1ª resposta.
+        // `thinkingConfig.thinkingLevel` é o parâmetro documentado; o 2.5 usa outro mecanismo e fica no padrão.
+        ...(/^gemini-3/.test(model) ? { generationConfig: { thinkingConfig: { thinkingLevel: 'low' } } } : {}),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
     })
-  } catch {
-    return { retryNext: false, error: new GeminiError(504, 'Não foi possível falar com o Google (rede ou tempo esgotado). Tente de novo.') }
+  } catch (e) {
+    return describeNetworkError(e, timeoutMs)
   }
 
   const raw = await r.text().catch(() => '')
@@ -151,9 +177,12 @@ async function once(model: string, p: GeminiParams): Promise<{ text: string } | 
 export async function generateText(p: GeminiParams): Promise<{ text: string; model: string }> {
   const models = geminiModels()
   const failures: GeminiError[] = []
+  const deadline = p.deadline ?? Date.now() + 52_000
 
   for (const model of models) {
-    const res = await once(model, p)
+    const remaining = deadline - Date.now()
+    if (failures.length > 0 && remaining < MIN_ATTEMPT_MS) break // sem tempo para outra tentativa
+    const res = await once(model, p, Math.max(1_000, Math.min(ATTEMPT_MS, remaining)))
     if ('text' in res) return { text: res.text, model }
     failures.push(res.error)
     if (!res.retryNext) throw res.error

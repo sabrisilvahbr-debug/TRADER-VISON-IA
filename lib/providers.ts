@@ -1,4 +1,4 @@
-export type ProviderId = 'gemini' | 'openai' | 'openrouter'
+export type ProviderId = 'gemini' | 'zai' | 'openai' | 'openrouter'
 
 export interface ProviderInfo {
   id: ProviderId
@@ -20,6 +20,14 @@ export const PROVIDERS: ProviderInfo[] = [
     keyNote:
       'Cole a chave exatamente como o AI Studio a gerou. As chaves novas costumam começar com AQ. e as antigas com AIza. ' +
       'Chaves antigas sem restrição podem ser recusadas pelo Google: nesse caso, gere uma nova.',
+  },
+  {
+    id: 'zai',
+    label: 'Z.ai GLM-5.3-Flash',
+    cost: 'Pago por uso',
+    keyUrl: 'https://z.ai/manage-apikey/apikey-list',
+    keyHint: 'Cole a chave da Z.ai',
+    keyNote: 'Modelo GLM-5.3-Flash, que aceita imagem. É cobrado por uso: confira o saldo no painel da Z.ai.',
   },
   {
     id: 'openrouter',
@@ -67,7 +75,8 @@ export function checkKey(id: ProviderId, raw: string): KeyCheck {
   const key = cleanKey(raw)
   if (!key) return { ok: false, reason: 'Cole a chave.' }
 
-  if (id === 'gemini') {
+  if (id === 'gemini' || id === 'zai') {
+    // Sem prefixo obrigatório: o formato da chave é decidido pelo provedor, não pelo app.
     if (/\s/.test(key)) return { ok: false, reason: 'A chave não pode ter espaços ou quebras de linha.' }
     if (/["'`<>]/.test(key)) return { ok: false, reason: 'Remova as aspas ou símbolos ao redor da chave.' }
     if (!/^[\x21-\x7E]+$/.test(key)) return { ok: false, reason: 'A chave tem caracteres inválidos. Copie-a de novo.' }
