@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "test": "tsc -p tsconfig.test.json && node --test \"tests/unit/*.test.mjs\"",
-    "test:e2e": "tsc -p tsconfig.test.json && node --test \"tests/integration/*.test.mjs\""
+    "test:e2e": "tsc -p tsconfig.test.json && node --test \"tests/integration/gemini.e2e.test.mjs\"",
+    "test:e2e:zai": "tsc -p tsconfig.test.json && node --test \"tests/integration/zai.e2e.test.mjs\""
   },
   "dependencies": {
     "next": "15.3.8",

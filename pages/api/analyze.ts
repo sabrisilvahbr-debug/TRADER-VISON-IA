@@ -5,6 +5,8 @@ import { GeminiError, generateText, redact } from '../../lib/gemini'
 export const config = { api: { bodyParser: { sizeLimit: '6mb' } }, maxDuration: 60 }
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini'
+const ZAI_MODEL = process.env.ZAI_MODEL || 'glm-5.3-flash'
+const ZAI_URL = 'https://api.z.ai/api/paas/v4/chat/completions'
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/free'
 const ALLOWED_MIME = ['image/png', 'image/jpeg', 'image/webp']
 const MAX_BASE64_CHARS = 5 * 1024 * 1024 // ~3,7MB de imagem
@@ -61,11 +63,12 @@ function marketContext(m: unknown): string {
 
 const clean = (v: unknown, n: number) => String(v ?? '').replace(/[^\p{L}\p{N} ./:_-]/gu, '').slice(0, n)
 
-async function callGemini(key: string, image: string, mime: string, ctx: string): Promise<string> {
+async function callGemini(key: string, image: string, mime: string, ctx: string, deadline: number): Promise<string> {
   const prompt = `${PROMPT}\n${JSON_SPEC}\n${ctx}`
   let last: unknown = new ProviderError(502, 'O modelo não devolveu uma resposta.')
   for (let i = 0; i < 2; i++) {
-    const { text } = await generateText({ apiKey: key, prompt, image: { data: image, mime } })
+    if (i > 0 && deadline - Date.now() < 15_000) break // sem tempo para repetir
+    const { text } = await generateText({ apiKey: key, prompt, image: { data: image, mime }, deadline })
     try {
       parseJson(text)
       return text
@@ -99,11 +102,14 @@ async function callChat(
   ctx: string,
   jsonMode: boolean,
   attempts: number,
+  deadline: number,
+  extra: Record<string, unknown> = {},
 ): Promise<string> {
   const body = JSON.stringify({
     model,
     temperature: 0.2,
     max_tokens: 3000,
+    ...extra,
     ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
     messages: [
       {
@@ -119,16 +125,20 @@ async function callChat(
   let last: ProviderError = new ProviderError(502, 'O provedor não respondeu.')
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(900)
+    const remaining = deadline - Date.now()
+    if (i > 0 && remaining < 6_000) break // sem tempo para outra tentativa
+    const timeoutMs = Math.max(1_000, Math.min(40_000, remaining))
     let r: Response
     try {
       r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body,
-        signal: AbortSignal.timeout(40_000),
+        signal: AbortSignal.timeout(timeoutMs),
       })
-    } catch {
-      last = new ProviderError(504, 'O provedor demorou demais para responder.')
+    } catch (e) {
+      const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError')
+      last = new ProviderError(504, timedOut ? `O provedor demorou mais de ${Math.round(timeoutMs / 1000)} s para responder. Tente de novo.` : 'Falha de conexão com o provedor. Tente de novo.')
       continue
     }
 
@@ -155,7 +165,7 @@ async function callChat(
     }
 
     if (r.status === 401 || r.status === 403) throw new ProviderError(401, 'Chave recusada pelo provedor. Gere outra e cole de novo.')
-    if (r.status === 402 || /insufficient_quota|insufficient credits/i.test(raw)) {
+    if (r.status === 402 || /insufficient_quota|insufficient credits|insufficient balance|balance|余额|arrear/i.test(raw)) {
       throw new ProviderError(402, 'Sem saldo nesta conta. Adicione créditos ou escolha um provedor gratuito.')
     }
 
@@ -260,6 +270,7 @@ function looksLikeImage(b64: string): boolean {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const deadline = Date.now() + 54_000 // a rota tem 60 s (maxDuration); sobra margem para responder
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método não permitido' })
 
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim()
@@ -284,9 +295,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const check = checkKey(provider.id, userKey)
     if (!check.ok) return res.status(401).json({ error: check.reason ?? 'Chave inválida.' })
   }
-  const envKey = provider.id === 'gemini' ? process.env.GOOGLE_GEMINI_API_KEY : undefined
+  // Chave do servidor (opcional): só entra quando o usuário não colou a dele. Nunca vai ao navegador.
+  const envKey = provider.id === 'gemini' ? process.env.GOOGLE_GEMINI_API_KEY : provider.id === 'zai' ? process.env.ZAI_API_KEY : undefined
   const apiKey = userKey || envKey
   if (!apiKey) return res.status(401).json({ error: `Cole sua chave do ${provider.label} para analisar.` })
+
+  if (provider.id === 'zai' && mimeType === 'image/webp') {
+    return res.status(400).json({ error: 'A Z.ai aceita só PNG ou JPG. Envie o print nesse formato.' })
+  }
 
   const ctx = `Contexto informado: ativo="${clean(contexto?.ativo, 24)}", timeframe="${clean(contexto?.timeframe, 12)}", perfil="${clean(contexto?.perfil, 16)}".`
   const ctxFull = ctx + (marketContext(mercado) ? '\n' + marketContext(mercado) : '')
@@ -294,9 +310,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     let text: string
-    if (id === 'gemini') text = await callGemini(apiKey, imageData, mimeType, ctxFull)
-    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctxFull, true, 2)
-    else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctxFull, false, 3)
+    if (id === 'gemini') text = await callGemini(apiKey, imageData, mimeType, ctxFull, deadline)
+    else if (id === 'openai') text = await callChat('https://api.openai.com/v1/chat/completions', apiKey, OPENAI_MODEL, imageData, mimeType, ctxFull, true, 2, deadline)
+    else if (id === 'zai') {
+      // GLM-5.3-Flash: visão via image_url (data URL). O raciocínio não pode ser desligado, então usa esforço baixo.
+      text = await callChat(ZAI_URL, apiKey, ZAI_MODEL, imageData, mimeType, ctxFull, false, 2, deadline, { reasoning_effort: 'low', max_tokens: 6000 })
+    } else text = await callChat('https://openrouter.ai/api/v1/chat/completions', apiKey, OPENROUTER_MODEL, imageData, mimeType, ctxFull, false, 3, deadline)
 
     return res.status(200).json({ result: normalize(parseJson(text)) })
   } catch (error) {
